@@ -505,7 +505,7 @@ impl<RS: Read + Seek> Xlsx<RS> {
                             }
                         }
                         Ok(Event::End(ref e)) if e.local_name().as_ref() == b"Relationships" => {
-                            break
+                            break;
                         }
                         Ok(Event::Eof) => return Err(XlsxError::XmlEof("Relationships")),
                         Err(e) => return Err(XlsxError::Xml(e)),
@@ -716,6 +716,52 @@ impl InnerTableMetadata {
         }
     }
 }
+fn worksheet2(
+    strings: &[String],
+    formats: &[CellFormat],
+    mut xml: XlsReader<'_>,
+    read_data: &mut dyn FnMut(&[String], &[CellFormat], &mut XlsReader<'_>) -> Result<(), XlsxError>,
+) -> Result<(), XlsxError>
+{
+    let mut buf = Vec::new();
+    'xml: loop {
+        buf.clear();
+        match xml.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) => {
+                match e.local_name().as_ref() {
+                    b"dimension" => {
+                        for a in e.attributes() {
+                            if let Attribute {
+                                key: QName(b"ref"),
+                                value: rdim,
+                            } = a.map_err(XlsxError::XmlAttr)?
+                            {
+                                let len = get_dimension(&rdim)?;
+                                println!("Dimension: {:?}", len);
+                                // if len < 1_000_000 {
+                                // it is unlikely to have more than that
+                                // there may be of empty cells
+                                // cells.reserve(len as usize);
+                                // }
+                                continue 'xml;
+                            }
+                        }
+                        return Err(XlsxError::UnexpectedNode("dimension"));
+                    }
+                    b"sheetData" => {
+                        read_data(strings, formats, &mut xml)?;
+                        break;
+                    }
+                    _ => (),
+                }
+            }
+            Ok(Event::Eof) => break,
+            Err(e) => return Err(XlsxError::Xml(e)),
+            _ => (),
+        }
+    }
+    Ok(())
+}
 
 fn worksheet<T, F>(
     strings: &[String],
@@ -747,11 +793,11 @@ where
                             } = a.map_err(XlsxError::XmlAttr)?
                             {
                                 let len = get_dimension(&rdim)?.len();
-                                if len < 1_000_000 {
-                                    // it is unlikely to have more than that
-                                    // there may be of empty cells
-                                    cells.reserve(len as usize);
-                                }
+                                // if len < 1_000_000 {
+                                // it is unlikely to have more than that
+                                // there may be of empty cells
+                                cells.reserve(len as usize);
+                                // }
                                 continue 'xml;
                             }
                         }
@@ -824,6 +870,28 @@ impl<RS: Read + Seek> Reader<RS> for Xlsx<RS> {
             })
         })
     }
+    fn worksheet2(&mut self, num: usize,
+                  value_handler: &mut dyn FnMut((u32, u32), DataType) -> (),
+    ) -> Option<Result<(), Self::Error>>
+    {
+        let xml = match self.sheets.get(num) {
+            Some((_, path)) => xml_reader(&mut self.zip, path),
+            None => return None,
+        };
+        let is_1904 = self.is_1904;
+        let strings = &self.strings;
+        let formats = &self.formats;
+        xml.map(|xml| {
+            worksheet2(
+                strings,
+                formats,
+                xml?,
+                &mut |_, _, xml| {
+                    read_sheet_data3(xml, strings, formats, is_1904, value_handler)
+                },
+            )
+        })
+    }
 
     fn worksheet_formula(&mut self, name: &str) -> Option<Result<Range<String>, XlsxError>> {
         let xml = match self.sheets.iter().find(|&(n, _)| n == name) {
@@ -835,7 +903,7 @@ impl<RS: Read + Seek> Reader<RS> for Xlsx<RS> {
         let formats = &self.formats;
         xml.map(|xml| {
             worksheet(strings, formats, xml?, &mut |_, _, xml, cells| {
-                read_sheet(xml, cells, &mut |cells, xml, e, pos, _| {
+                read_sheet::<DataType, _>(xml, &mut |xml, e, pos, _| {
                     match e.local_name().as_ref() {
                         b"is" | b"v" => {
                             xml.read_to_end_into(e.name(), &mut Vec::new())?;
@@ -924,13 +992,11 @@ fn get_attribute<'a>(atts: Attributes<'a>, n: QName) -> Result<Option<&'a [u8]>,
 
 fn read_sheet<T, F>(
     xml: &mut XlsReader<'_>,
-    cells: &mut Vec<Cell<T>>,
     push_cell: &mut F,
 ) -> Result<(), XlsxError>
 where
     T: CellType,
     F: FnMut(
-        &mut Vec<Cell<T>>,
         &mut XlsReader<'_>,
         &BytesStart<'_>,
         (u32, u32),
@@ -971,7 +1037,7 @@ where
                 loop {
                     cell_buf.clear();
                     match xml.read_event_into(&mut cell_buf) {
-                        Ok(Event::Start(ref e)) => push_cell(cells, xml, e, pos, c_element)?,
+                        Ok(Event::Start(ref e)) => push_cell(xml, e, pos, c_element)?,
                         Ok(Event::End(ref e)) if e.local_name().as_ref() == b"c" => break,
                         Ok(Event::Eof) => return Err(XlsxError::XmlEof("c")),
                         Err(e) => return Err(XlsxError::Xml(e)),
@@ -988,7 +1054,201 @@ where
     }
 }
 
+fn read_sheet2(
+    xml: &mut XlsReader<'_>,
+    push_cell: &mut dyn FnMut(
+        &mut XlsReader<'_>,
+        &BytesStart<'_>, // start_element
+        (u32, u32),      // pos
+        &BytesStart<'_>,// cell_element containing the above start_element
+    ) -> Result<(), XlsxError>,
+) -> Result<(), XlsxError>
+{
+    let mut buf = Vec::new();
+    let mut cell_buf = Vec::new();
+
+    let mut row_index = 0;
+    let mut col_index = 0;
+
+    loop {
+        buf.clear();
+        match xml.read_event_into(&mut buf) {
+            Ok(Event::Start(ref row_element)) if row_element.local_name().as_ref() == b"row" => {
+                let attribute = get_attribute(row_element.attributes(), QName(b"r"))?;
+                if let Some(range) = attribute {
+                    let row = get_row(range)?;
+                    row_index = row;
+                }
+            }
+            Ok(Event::End(ref row_element)) if row_element.local_name().as_ref() == b"row" => {
+                row_index += 1;
+                col_index = 0;
+            }
+            Ok(Event::Start(ref c_element)) if c_element.local_name().as_ref() == b"c" => {
+                let attribute = get_attribute(c_element.attributes(), QName(b"r"))?;
+
+                let pos = if let Some(range) = attribute {
+                    let (row, col) = get_row_column(range)?;
+                    col_index = col;
+                    (row, col)
+                } else {
+                    (row_index, col_index)
+                };
+
+                loop {
+                    cell_buf.clear();
+                    match xml.read_event_into(&mut cell_buf) {
+                        Ok(Event::Start(ref e)) => push_cell(//data_handler,
+                                                             xml, e, pos, c_element)?,
+                        Ok(Event::End(ref e)) if e.local_name().as_ref() == b"c" => break,
+                        Ok(Event::Eof) => return Err(XlsxError::XmlEof("c")),
+                        Err(e) => return Err(XlsxError::Xml(e)),
+                        _ => (),
+                    }
+                }
+                col_index += 1;
+            }
+            Ok(Event::End(ref e)) if e.local_name().as_ref() == b"sheetData" => return Ok(()),
+            Ok(Event::Eof) => return Err(XlsxError::XmlEof("sheetData")),
+            Err(e) => return Err(XlsxError::Xml(e)),
+            _ => (),
+        }
+    }
+}
+fn read_value(
+    v: String,
+    strings: &[String],
+    formats: &[CellFormat],
+    cell_element: &BytesStart<'_>,
+    is_1904: bool,
+) -> Result<DataType, XlsxError> {
+    let cell_format = match get_attribute(cell_element.attributes(), QName(b"s")) {
+        Ok(Some(style)) => {
+            let id: usize = std::str::from_utf8(style).unwrap_or("0").parse()?;
+            formats.get(id)
+        }
+        _ => Some(&CellFormat::Other),
+    };
+
+    match get_attribute(cell_element.attributes(), QName(b"t"))? {
+        Some(b"s") => {
+            // shared string
+            let idx: usize = v.parse()?;
+            Ok(DataType::String(strings[idx].clone()))
+        }
+        Some(b"b") => {
+            // boolean
+            Ok(DataType::Bool(v != "0"))
+        }
+        Some(b"e") => {
+            // error
+            Ok(DataType::Error(v.parse()?))
+        }
+        Some(b"d") => {
+            // date
+            Ok(DataType::DateTimeIso(v))
+        }
+        Some(b"str") => {
+            // see http://officeopenxml.com/SScontentOverview.php
+            // str - refers to formula cells
+            // * <c .. t='v' .. > indicates calculated value (this case)
+            // * <c .. t='f' .. > to the formula string (ignored case
+            // TODO: Fully support a DataType::Formula representing both Formula string &
+            // last calculated value?
+            //
+            // NB: the result of a formula may not be a numeric value (=A3&" "&A4).
+            // We do try an initial parse as Float for utility, but fall back to a string
+            // representation if that fails
+            v.parse().map(DataType::Float).or(Ok(DataType::String(v)))
+        }
+        Some(b"n") => {
+            // n - number
+            if v.is_empty() {
+                Ok(DataType::Empty)
+            } else {
+                v.parse()
+                    .map(|n| format_excel_f64(n, cell_format, is_1904))
+                    .map_err(XlsxError::ParseFloat)
+            }
+        }
+        None => {
+            // If type is not known, we try to parse as Float for utility, but fall back to
+            // String if this fails.
+            v.parse()
+                .map(|n| format_excel_f64(n, cell_format, is_1904))
+                .or(Ok(DataType::String(v)))
+        }
+        Some(b"is") => {
+            // this case should be handled in outer loop over cell elements, in which
+            // case read_inline_str is called instead. Case included here for completeness.
+            Err(XlsxError::Unexpected(
+                "called read_value on a cell of type inlineStr",
+            ))
+        }
+        Some(t) => {
+            let t = std::str::from_utf8(t).unwrap_or("<utf8 error>").to_string();
+            Err(XlsxError::CellTAttribute(t))
+        }
+    }
+}
+
 /// read sheetData node
+// fn read_sheet_data2(
+//     xml: &mut XlsReader<'_>,
+//     strings: &[String],
+//     formats: &[CellFormat],
+//     data_handler: &mut dyn FnMut((u32, u32), DataType) -> (),
+//     is_1904: bool,
+// ) -> Result<(), XlsxError>
+// where
+//     // T: CellType,
+//     // G: FnMut((u32, u32), DataType) -> (),
+// {
+//     // read the contents of a <v> cell
+//     read_sheet2(
+//         xml,
+//         &mut |//data_handler: &mut FnMut((u32, u32), DataType) -> (),
+//               xml, start_element, pos, cell_element| {
+//             match start_element.local_name().as_ref() {
+//                 b"is" => {
+//                     // inlineStr
+//                     if let Some(s) = read_string(xml, start_element.name())? {
+//                         // cells.push(Cell::new(pos, DataType::String(s)));
+//                         data_handler(pos, DataType::String(s));
+//                     } else {
+//                         // cells.push(Cell::new(pos, DataType::Empty));
+//                         data_handler(pos, DataType::Empty);
+//                     }
+//                 }
+//                 b"v" => {
+//                     // value
+//                     let mut v = String::new();
+//                     let mut v_buf = Vec::new();
+//                     loop {
+//                         v_buf.clear();
+//                         match xml.read_event_into(&mut v_buf)? {
+//                             Event::Text(t) => v.push_str(&t.unescape()?),
+//                             Event::End(end) if end.name() == start_element.name() => break,
+//                             Event::Eof => return Err(XlsxError::XmlEof("v")),
+//                             _ => (),
+//                         }
+//                     }
+//                     match read_value(v, strings, formats, cell_element, is_1904)? {
+//                         DataType::Empty => data_handler(pos, DataType::Empty), //cells.push(Cell::new(pos, DataType::Empty)),
+//                         v => data_handler(pos, v), //cells.push(Cell::new(pos, v)),
+//                     }
+//                 }
+//                 b"f" => {
+//                     xml.read_to_end_into(start_element.name(), &mut Vec::new())?;
+//                 }
+//                 _n => return Err(XlsxError::UnexpectedNode("v, f, or is")),
+//             }
+//             Ok(())
+//         },
+//         // data_handler,
+//     )
+// }
+
 fn read_sheet_data(
     xml: &mut XlsReader<'_>,
     strings: &[String],
@@ -996,90 +1256,30 @@ fn read_sheet_data(
     cells: &mut Vec<Cell<DataType>>,
     is_1904: bool,
 ) -> Result<(), XlsxError> {
-    /// read the contents of a <v> cell
-    fn read_value(
-        v: String,
-        strings: &[String],
-        formats: &[CellFormat],
-        c_element: &BytesStart<'_>,
-        is_1904: bool,
-    ) -> Result<DataType, XlsxError> {
-        let cell_format = match get_attribute(c_element.attributes(), QName(b"s")) {
-            Ok(Some(style)) => {
-                let id: usize = std::str::from_utf8(style).unwrap_or("0").parse()?;
-                formats.get(id)
-            }
-            _ => Some(&CellFormat::Other),
-        };
-
-        match get_attribute(c_element.attributes(), QName(b"t"))? {
-            Some(b"s") => {
-                // shared string
-                let idx: usize = v.parse()?;
-                Ok(DataType::String(strings[idx].clone()))
-            }
-            Some(b"b") => {
-                // boolean
-                Ok(DataType::Bool(v != "0"))
-            }
-            Some(b"e") => {
-                // error
-                Ok(DataType::Error(v.parse()?))
-            }
-            Some(b"d") => {
-                // date
-                Ok(DataType::DateTimeIso(v))
-            }
-            Some(b"str") => {
-                // see http://officeopenxml.com/SScontentOverview.php
-                // str - refers to formula cells
-                // * <c .. t='v' .. > indicates calculated value (this case)
-                // * <c .. t='f' .. > to the formula string (ignored case
-                // TODO: Fully support a DataType::Formula representing both Formula string &
-                // last calculated value?
-                //
-                // NB: the result of a formula may not be a numeric value (=A3&" "&A4).
-                // We do try an initial parse as Float for utility, but fall back to a string
-                // representation if that fails
-                v.parse().map(DataType::Float).or(Ok(DataType::String(v)))
-            }
-            Some(b"n") => {
-                // n - number
-                if v.is_empty() {
-                    Ok(DataType::Empty)
-                } else {
-                    v.parse()
-                        .map(|n| format_excel_f64(n, cell_format, is_1904))
-                        .map_err(XlsxError::ParseFloat)
-                }
-            }
-            None => {
-                // If type is not known, we try to parse as Float for utility, but fall back to
-                // String if this fails.
-                v.parse()
-                    .map(|n| format_excel_f64(n, cell_format, is_1904))
-                    .or(Ok(DataType::String(v)))
-            }
-            Some(b"is") => {
-                // this case should be handled in outer loop over cell elements, in which
-                // case read_inline_str is called instead. Case included here for completeness.
-                Err(XlsxError::Unexpected(
-                    "called read_value on a cell of type inlineStr",
-                ))
-            }
-            Some(t) => {
-                let t = std::str::from_utf8(t).unwrap_or("<utf8 error>").to_string();
-                Err(XlsxError::CellTAttribute(t))
-            }
-        }
-    }
-
-    read_sheet(xml, cells, &mut |cells, xml, e, pos, c_element| {
+    let data_handler = &mut |pos: (u32, u32), data_type: DataType| {
+        cells.push(Cell::new(pos, data_type));
+    };
+    read_sheet_data3(xml, strings, formats, is_1904, data_handler)
+}
+fn read_sheet_data3(
+    xml: &mut XlsReader<'_>,
+    strings: &[String],
+    formats: &[CellFormat],
+    is_1904: bool,
+    data_handler: &mut dyn FnMut((u32, u32), DataType) -> (),
+) -> Result<(), XlsxError> {
+    let default_push_cells = &mut|xml: &mut XlsReader<'_>,
+                              e: &BytesStart<'_>,
+                              pos: (u32, u32),
+                              c_element: &BytesStart<'_>| {
+        println!("at {:?}", pos);
         match e.local_name().as_ref() {
             b"is" => {
                 // inlineStr
                 if let Some(s) = read_string(xml, e.name())? {
-                    cells.push(Cell::new(pos, DataType::String(s)));
+                    data_handler(pos, DataType::String(s));
+                } else {
+                    data_handler(pos, DataType::Empty);
                 }
             }
             b"v" => {
@@ -1096,8 +1296,8 @@ fn read_sheet_data(
                     }
                 }
                 match read_value(v, strings, formats, c_element, is_1904)? {
-                    DataType::Empty => (),
-                    v => cells.push(Cell::new(pos, v)),
+                    DataType::Empty => data_handler(pos, DataType::Empty),
+                    v => data_handler(pos, v),
                 }
             }
             b"f" => {
@@ -1106,7 +1306,8 @@ fn read_sheet_data(
             _n => return Err(XlsxError::UnexpectedNode("v, f, or is")),
         }
         Ok(())
-    })
+    };
+    read_sheet::<DataType, _>(xml, default_push_cells)
 }
 
 #[derive(Debug, PartialEq)]
@@ -1278,7 +1479,7 @@ fn test_dimensions() {
         get_dimension(b"C2:D35").unwrap(),
         Dimensions {
             start: (1, 2),
-            end: (34, 3)
+            end: (34, 3),
         }
     );
     assert_eq!(

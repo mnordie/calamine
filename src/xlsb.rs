@@ -679,6 +679,10 @@ impl<RS: Read + Seek> Reader<RS> for Xlsb<RS> {
     fn pictures(&self) -> Option<Vec<(String, Vec<u8>)>> {
         self.pictures.to_owned()
     }
+
+    fn worksheet2(&mut self, num: usize, read_data: &mut dyn FnMut((u32, u32), DataType) -> ()) -> Option<Result<(), Self::Error>> {
+        todo!()
+    }
 }
 
 struct RecordIter<'a> {

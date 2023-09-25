@@ -1,9 +1,8 @@
+use std::fs::metadata;
 use calamine::DataType::{
     Bool, DateTime, DateTimeIso, Duration, DurationIso, Empty, Error, Float, String,
 };
-use calamine::{
-    open_workbook, open_workbook_auto, Ods, Reader, Sheet, SheetType, SheetVisible, Xls, Xlsb, Xlsx,
-};
+use calamine::{open_workbook, open_workbook_auto, Ods, Reader, Sheet, SheetType, SheetVisible, Xls, Xlsb, Xlsx, Metadata, Cell};
 use calamine::{CellErrorType::*, DataType};
 use std::io::Cursor;
 use std::sync::Once;
@@ -700,7 +699,14 @@ fn issue_174() {
 
     let path = format!("{}/tests/issue_174.xlsx", env!("CARGO_MANIFEST_DIR"));
     let mut xls: Xlsx<_> = open_workbook(&path).unwrap();
-    xls.worksheet_range_at(0).unwrap().unwrap();
+    // xls.worksheet_range_at(0).unwrap().unwrap();
+    // let names  = xls.sheet_names();
+    // let name: &str = names.get(0).unwrap();
+    let mut cells = Vec::new();
+    xls.worksheet2(0, &mut|pos:(u32, u32), data_type: DataType|{
+        cells.push(Cell::new(pos, data_type));
+    });
+    assert_eq!(cells.len(), 22);
 }
 
 #[test]

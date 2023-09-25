@@ -171,6 +171,10 @@ where
         self.sheets.get(name).map(|r| Ok(r.0.to_owned()))
     }
 
+    fn worksheet2(&mut self, num: usize, read_data: &mut dyn FnMut((u32, u32), DataType) -> ()) -> Option<Result<(), Self::Error>> {
+        todo!()
+    }
+
     fn worksheets(&mut self) -> Vec<(String, Range<DataType>)> {
         self.sheets
             .iter()

@@ -7,12 +7,13 @@ use std::path::PathBuf;
 fn main() {
     // converts first argument into a csv (same name, silently overrides
     // if the file already exists
-
+    let file = "/home/martin/Documents/HealthCare_OPLS_X_Y_singlewords.xlsx".to_string();
+    // let file = format!("{}/tests/issues.xlsx", env!("CARGO_MANIFEST_DIR"));
     let file = env::args()
-        .nth(1)
+        .nth(1).or(Some(file))
         .expect("Please provide an excel file to convert");
     let sheet = env::args()
-        .nth(2)
+        .nth(2).or(Some("0".to_string())).and_then(|s|Some(str::parse::<usize>(&*s))).unwrap()
         .expect("Expecting a sheet name as second argument");
 
     let sce = PathBuf::from(file);
@@ -24,7 +25,7 @@ fn main() {
     let dest = sce.with_extension("csv");
     let mut dest = BufWriter::new(File::create(dest).unwrap());
     let mut xl = open_workbook_auto(&sce).unwrap();
-    let range = xl.worksheet_range(&sheet).unwrap().unwrap();
+    let range = xl.worksheet_range_at(sheet).unwrap().unwrap();
 
     write_range(&mut dest, &range).unwrap();
 }

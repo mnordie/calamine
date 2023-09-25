@@ -209,7 +209,10 @@ where
     fn metadata(&self) -> &Metadata;
     /// Read worksheet data in corresponding worksheet path
     fn worksheet_range(&mut self, name: &str) -> Option<Result<Range<DataType>, Self::Error>>;
-
+    /// Read worksheet data passed to `read_data` callback function
+    fn worksheet2(&mut self, num: usize,
+                  read_data: &mut dyn FnMut((u32, u32), DataType) -> (),
+    ) -> Option<Result<(), Self::Error>>;
     /// Fetch all worksheet data & paths
     fn worksheets(&mut self) -> Vec<(String, Range<DataType>)>;
 

@@ -2,9 +2,7 @@
 
 use crate::errors::Error;
 use crate::vba::VbaProject;
-use crate::{
-    open_workbook, open_workbook_from_rs, DataType, Metadata, Ods, Range, Reader, Xls, Xlsb, Xlsx,
-};
+use crate::{open_workbook, open_workbook_from_rs, DataType, Metadata, Ods, Range, Reader, Xls, Xlsb, Xlsx};
 use std::borrow::Cow;
 use std::fs::File;
 use std::io::BufReader;
@@ -140,6 +138,15 @@ where
             Sheets::Xlsx(ref e) => e.pictures(),
             Sheets::Xlsb(ref e) => e.pictures(),
             Sheets::Ods(ref e) => e.pictures(),
+        }
+    }
+
+    fn worksheet2(&mut self, num: usize, read_data: &mut dyn FnMut((u32, u32), DataType) -> ()) -> Option<Result<(), Self::Error>>  {
+        match *self {
+            Sheets::Xls(ref mut e)   => e.worksheet2(num, read_data).map(|r| r.map_err(Error::Xls)),
+            Sheets::Xlsx(ref mut e) => e.worksheet2(num, read_data).map(|r| r.map_err(Error::Xlsx)),
+            Sheets::Xlsb(ref mut e) => e.worksheet2(num, read_data).map(|r| r.map_err(Error::Xlsb)),
+            Sheets::Ods(ref mut e)  => e.worksheet2(num, read_data).map(|r| r.map_err(Error::Ods)),
         }
     }
 }
