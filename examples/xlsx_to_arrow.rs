@@ -1,9 +1,9 @@
 use calamine::{open_workbook_auto, DataType, Range, Reader};
-use std::any::Any;
 use std::borrow::BorrowMut;
 use std::cell::{Cell, RefCell};
 use std::cmp::max;
 use std::env;
+use std::fmt::Formatter;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
@@ -67,6 +67,7 @@ fn main() {
     let cols = table.len();
     let rows = table.get(0).unwrap().borrow().len();
     println!("columns: {}, rows: {}", cols, rows);
+    #[derive(Debug, Clone, Default)]
     struct Types {
         bools: u32,
         emptys: u32,
@@ -80,7 +81,7 @@ fn main() {
         iso_durs: u32,
     }
     impl Types {
-        fn inc(&mut self, data_type: DataType) {
+        fn inc(&mut self, data_type: &DataType) {
             match data_type {
                 DataType::Empty => self.emptys += 1,
                 DataType::Bool(_) => self.bools += 1,
@@ -94,7 +95,9 @@ fn main() {
                 DataType::DurationIso(_) => self.iso_durs += 1,
             }
         }
-        fn to_string(&self) -> String {
+    }
+    impl std::fmt::Display for Types {
+        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
             let mut stri = String::new();
             if (self.emptys > 0) {
                 stri.push_str(format!("Empty: {}\n", self.emptys).as_str());
@@ -126,15 +129,19 @@ fn main() {
             if (self.iso_durs > 0) {
                 stri.push_str(format!("ISO Dirations: {}\n", self.iso_durs).as_str());
             }
-            stri
+            // stri
+            f.write_str(stri.as_str())
         }
     }
-    let mut types = Types::new();
+    let mut total_types = Types::default();
     for cols in table.iter() {
-        for mut cells in cols.borrow().iter() {
+        let mut types = Types::default();
+
+        for cells in cols.borrow().iter() {
             types.inc(cells);
+            total_types.inc(cells);
         }
-        println!("Column {}", cols.borrow().get(0).or(DataType::String("Unknown".to_string()).unwrap()).unwrap());
+        println!("Column {}: {}", cols.borrow().get(0).or(Some(&DataType::String("Unknown".to_string()))).unwrap(), types);
     }
     for row in 0..rows {
         let mut stri = String::new();
