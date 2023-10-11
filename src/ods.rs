@@ -16,7 +16,7 @@ use zip::read::{ZipArchive, ZipFile};
 use zip::result::ZipError;
 
 use crate::vba::VbaProject;
-use crate::{DataType, Metadata, Range, Reader, Sheet, SheetType, SheetVisible};
+use crate::{DataType, Metadata, Range, Reader, Sheet, SheetCallbacks, SheetType, SheetVisible};
 use std::marker::PhantomData;
 
 const MIMETYPE: &[u8] = b"application/vnd.oasis.opendocument.spreadsheet";
@@ -171,7 +171,7 @@ where
         self.sheets.get(name).map(|r| Ok(r.0.to_owned()))
     }
 
-    fn worksheet2(&mut self, num: usize, read_data: &mut dyn FnMut((u32, u32), DataType) -> ()) -> Option<Result<(), Self::Error>> {
+    fn worksheet2(&mut self, num: usize, read_data: &mut dyn FnMut((u32, u32), DataType) -> (),callbacks: &mut dyn SheetCallbacks) -> Option<Result<(), Self::Error>> {
         todo!()
     }
 

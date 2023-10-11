@@ -16,10 +16,7 @@ use crate::formats::{
     builtin_format_by_id, detect_custom_number_format, format_excel_f64, CellFormat,
 };
 use crate::vba::VbaProject;
-use crate::{
-    Cell, CellErrorType, CellType, DataType, Metadata, Range, Reader, Sheet, SheetType,
-    SheetVisible, Table,
-};
+use crate::{Cell, CellErrorType, CellPos, CellType, DataType, Dimension, Metadata, Range, Reader, Sheet, SheetCallbacks, SheetType, SheetVisible, Table};
 
 type XlsReader<'a> = XmlReader<BufReader<ZipFile<'a>>>;
 
@@ -870,8 +867,10 @@ impl<RS: Read + Seek> Reader<RS> for Xlsx<RS> {
             })
         })
     }
+
     fn worksheet2(&mut self, num: usize,
                   value_handler: &mut dyn FnMut((u32, u32), DataType) -> (),
+        callbacks: &mut dyn SheetCallbacks,
     ) -> Option<Result<(), Self::Error>>
     {
         let xml = match self.sheets.get(num) {
@@ -887,7 +886,7 @@ impl<RS: Read + Seek> Reader<RS> for Xlsx<RS> {
                 formats,
                 xml?,
                 &mut |_, _, xml| {
-                    read_sheet_data3(xml, strings, formats, is_1904, value_handler)
+                    read_sheet_data3(xml, strings, formats, is_1904, value_handler, callbacks)
                 },
             )
         })
@@ -1248,7 +1247,17 @@ fn read_value(
 //         // data_handler,
 //     )
 // }
+struct NopCallbacks {}
+impl SheetCallbacks for NopCallbacks {
+    fn dimension(&mut self, dim: &Dimension) {
+    }
 
+    fn cell(&mut self, pos: &CellPos, data_type: &DataType) {
+    }
+
+    fn row_end(&mut self, pos: &CellPos) {
+    }
+}
 fn read_sheet_data(
     xml: &mut XlsReader<'_>,
     strings: &[String],
@@ -1259,7 +1268,8 @@ fn read_sheet_data(
     let data_handler = &mut |pos: (u32, u32), data_type: DataType| {
         cells.push(Cell::new(pos, data_type));
     };
-    read_sheet_data3(xml, strings, formats, is_1904, data_handler)
+    let mut callbacks = NopCallbacks {};
+    read_sheet_data3(xml, strings, formats, is_1904, data_handler, &mut callbacks)
 }
 fn read_sheet_data3(
     xml: &mut XlsReader<'_>,
@@ -1267,19 +1277,23 @@ fn read_sheet_data3(
     formats: &[CellFormat],
     is_1904: bool,
     data_handler: &mut dyn FnMut((u32, u32), DataType) -> (),
-) -> Result<(), XlsxError> {
+    callbacks: &mut (impl SheetCallbacks + ?Sized),
+) -> Result<(), XlsxError>
+     {
     let default_push_cells = &mut|xml: &mut XlsReader<'_>,
                               e: &BytesStart<'_>,
                               pos: (u32, u32),
                               c_element: &BytesStart<'_>| {
-        println!("at {:?}", pos);
+        // println!("at {:?}", pos);
         match e.local_name().as_ref() {
             b"is" => {
                 // inlineStr
                 if let Some(s) = read_string(xml, e.name())? {
-                    data_handler(pos, DataType::String(s));
+                    data_handler(pos, DataType::String(s.clone()));
+                    callbacks.cell(&CellPos{row:pos.0, col:pos.1}, &DataType::String(s))
                 } else {
                     data_handler(pos, DataType::Empty);
+                    callbacks.cell(&CellPos{row:pos.0, col:pos.1}, &DataType::Empty)
                 }
             }
             b"v" => {
@@ -1296,8 +1310,14 @@ fn read_sheet_data3(
                     }
                 }
                 match read_value(v, strings, formats, c_element, is_1904)? {
-                    DataType::Empty => data_handler(pos, DataType::Empty),
-                    v => data_handler(pos, v),
+                    DataType::Empty => {
+                        data_handler(pos, DataType::Empty);
+                        callbacks.cell(&CellPos{row:pos.0, col:pos.1}, &DataType::Empty)
+                    }
+                    ,
+                    v => { data_handler(pos, v.clone());
+                        callbacks.cell(&CellPos{row:pos.0, col:pos.1}, &v)
+                    },
                 }
             }
             b"f" => {

@@ -18,9 +18,7 @@ use crate::formats::{
 };
 use crate::utils::{push_column, read_f64, read_i32, read_u16, read_u32, read_usize};
 use crate::vba::VbaProject;
-use crate::{
-    Cell, CellErrorType, DataType, Metadata, Range, Reader, Sheet, SheetType, SheetVisible,
-};
+use crate::{Cell, CellErrorType, DataType, Metadata, Range, Reader, Sheet, SheetCallbacks, SheetType, SheetVisible};
 
 /// A Xlsb specific error
 #[derive(Debug)]
@@ -680,7 +678,7 @@ impl<RS: Read + Seek> Reader<RS> for Xlsb<RS> {
         self.pictures.to_owned()
     }
 
-    fn worksheet2(&mut self, num: usize, read_data: &mut dyn FnMut((u32, u32), DataType) -> ()) -> Option<Result<(), Self::Error>> {
+    fn worksheet2(&mut self, num: usize, read_data: &mut dyn FnMut((u32, u32), DataType) -> (),callbacks: &mut dyn SheetCallbacks) -> Option<Result<(), Self::Error>> {
         todo!()
     }
 }

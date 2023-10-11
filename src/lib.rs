@@ -190,6 +190,32 @@ pub struct Sheet {
     /// Visible
     pub visible: SheetVisible,
 }
+/// Name row and col arguments
+pub struct CellPos {
+    /// Row index
+    pub row: u32,
+    /// Column index
+    pub col: u32,
+}
+/// Dimensions of a sheet
+pub struct Dimension {
+    /// Upper left
+    pub start: CellPos,
+    /// Bottom right
+    pub end: CellPos,
+}
+/// Trait for custom processing of sheet values
+pub trait SheetCallbacks {
+    /// Called when a dimension of a sheet is found
+    fn dimension(&mut self, dim: &Dimension);
+    /// Called when a cell is found
+    fn cell(&mut self, pos: &CellPos, data_type: &DataType);
+    // fn cell_int(&self,
+    //         row: u32,
+    //         col: u32, value: i64);
+    /// Called on end of row
+    fn row_end(&mut self,pos: &CellPos);
+}
 
 // FIXME `Reader` must only be seek `Seek` for `Xls::xls`. Because of the present API this limits
 // the kinds of readers (other) data in formats can be read from.
@@ -212,6 +238,7 @@ where
     /// Read worksheet data passed to `read_data` callback function
     fn worksheet2(&mut self, num: usize,
                   read_data: &mut dyn FnMut((u32, u32), DataType) -> (),
+                  callbacks: &mut dyn SheetCallbacks,
     ) -> Option<Result<(), Self::Error>>;
     /// Fetch all worksheet data & paths
     fn worksheets(&mut self) -> Vec<(String, Range<DataType>)>;
