@@ -150,7 +150,7 @@ impl SheetHandler {
                         .map_or(String::new(), |s| s.to_string())
                         .as_str(),
                 );
-                if (col < num_cols - 1) {
+                if col < num_cols - 1 {
                     stri.push_str("\t");
                 }
             }
@@ -160,11 +160,11 @@ impl SheetHandler {
     }
 }
 impl SheetCallbacks for SheetHandler {
-    fn dimension(&mut self, dim: &Dimension) {
+    fn dimension(&mut self, dim: Dimension) {
         self.table.push(RefCell::new(Vec::new()));
     }
 
-    fn cell(&mut self, pos: &CellPos, data_type: &DataType) {
+    fn cell(&mut self, pos: CellPos, data_type: DataType) {
         let p_row = pos.row as usize;
         let p_col = pos.col as usize;
 
@@ -194,7 +194,7 @@ impl SheetCallbacks for SheetHandler {
         }
     }
 
-    fn row_end(&mut self, pos: &CellPos) {}
+    fn row_end(&mut self, pos: CellPos) {}
 }
 fn main() {
     // converts first argument into a csv (same name, silently overrides
@@ -229,7 +229,7 @@ fn main() {
         type_range_start_idx: vec![],
         cells: vec![],
     };
-    let range = xl.worksheet2(sheet, &mut |pos, data_type| {}, &mut sheet_handler);
+    let range = xl.worksheet2(sheet, &mut sheet_handler);
     //write_range(&mut dest, &range).unwrap();
     sheet_handler.find_headers();
 }
@@ -239,7 +239,7 @@ fn write_range<W: Write>(dest: &mut W, sheet_handler: &SheetHandler) -> std::io:
     let num_rows = sheet_handler.num_rows();
     for r in 0..num_rows {
         for (i, col) in sheet_handler.table.iter().enumerate() {
-            if let Some(cell)= col.borrow().get(r) {
+            if let Some(cell) = col.borrow().get(r) {
                 match *cell {
                     DataType::Empty => Ok(()),
                     DataType::String(ref s)

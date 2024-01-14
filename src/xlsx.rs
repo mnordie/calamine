@@ -16,7 +16,10 @@ use crate::formats::{
     builtin_format_by_id, detect_custom_number_format, format_excel_f64, CellFormat,
 };
 use crate::vba::VbaProject;
-use crate::{Cell, CellErrorType, CellPos, CellType, DataType, Dimension, Metadata, Range, Reader, Sheet, SheetCallbacks, SheetType, SheetVisible, Table};
+use crate::{
+    Cell, CellErrorType, CellPos, CellType, DataType, Dimension, Metadata, Range, Reader, Sheet,
+    SheetCallbacks, SheetType, SheetVisible, Table,
+};
 
 type XlsReader<'a> = XmlReader<BufReader<ZipFile<'a>>>;
 
@@ -692,6 +695,133 @@ impl<RS: Read + Seek> Xlsx<RS> {
             Err(e) => Some(Err(e)),
         }
     }
+    fn worksheet3(
+        &mut self,
+        num: usize,
+        callbacks: &mut dyn SheetCallbacks,
+    ) -> Result<(), XlsxError> {
+        let Some((_, path)) = self.sheets.get(num) else {
+            return Err(XlsxError::XmlEof("No sheet"));
+        };
+        let Ok(sheet_data) = self.zip.by_name(path) else {
+            return Err(XlsxError::XmlEof("No sheet"));
+        };
+        let mut xml = XmlReader::from_reader(BufReader::new(sheet_data));
+        let mut xml = xml
+            .check_end_names(false)
+            .trim_text(false)
+            .check_comments(false)
+            .expand_empty_elements(true);
+        let mut buf = Vec::new();
+        'xml: loop {
+            buf.clear();
+            match xml.read_event_into(&mut buf) {
+                Ok(Event::Start(ref e)) => match e.local_name().as_ref() {
+                    b"dimension" => {
+                        for a in e.attributes() {
+                            if let Attribute {
+                                key: QName(b"ref"),
+                                value: rdim,
+                            } = a.map_err(XlsxError::XmlAttr)?
+                            {
+                                let len = get_dimension(&rdim)?;
+                                println!("Dimension: {:?}", len);
+                                let (s_row, s_col) = len.start;
+                                let (e_row, e_col) = len.end;
+                                callbacks.dimension(Dimension {
+                                    start: CellPos {
+                                        row: s_row,
+                                        col: s_col,
+                                    },
+                                    end: CellPos {
+                                        row: e_row,
+                                        col: e_col,
+                                    },
+                                });
+                                continue 'xml;
+                            }
+                        }
+                        return Err(XlsxError::UnexpectedNode("dimension"));
+                    }
+                    b"sheetData" => {
+                        read_sheet_data3(
+                            &mut xml,
+                            self.strings.as_slice(),
+                            self.formats.as_slice(),
+                            self.is_1904,
+                            callbacks,
+                        )?;
+                        break;
+                    }
+                    _ => (),
+                },
+                Ok(Event::Eof) => break,
+                Err(e) => return Err(XlsxError::Xml(e)),
+                _ => (),
+            }
+        }
+        Ok(())
+    }
+    fn worksheet<T, F>(
+        &mut self,
+        // strings: &[String],
+        // formats: &[CellFormat],
+        mut xml: XlsReader<'_>,
+        read_data: &mut F,
+    ) -> Result<Range<T>, XlsxError>
+    where
+        T: CellType,
+        F: FnMut(
+            &[String],
+            &[CellFormat],
+            &mut XlsReader<'_>,
+            &mut Vec<Cell<T>>,
+        ) -> Result<(), XlsxError>,
+    {
+        let mut cells = Vec::with_capacity(1024);
+        let mut buf = Vec::with_capacity(1024);
+        'xml: loop {
+            buf.clear();
+            match xml.read_event_into(&mut buf) {
+                Ok(Event::Start(ref e)) => {
+                    match e.local_name().as_ref() {
+                        b"dimension" => {
+                            for a in e.attributes() {
+                                if let Attribute {
+                                    key: QName(b"ref"),
+                                    value: rdim,
+                                } = a.map_err(XlsxError::XmlAttr)?
+                                {
+                                    let len = get_dimension(&rdim)?.len();
+                                    // if len < 1_000_000 {
+                                    // it is unlikely to have more than that
+                                    // there may be of empty cells
+                                    cells.reserve(len as usize);
+                                    // }
+                                    continue 'xml;
+                                }
+                            }
+                            return Err(XlsxError::UnexpectedNode("dimension"));
+                        }
+                        b"sheetData" => {
+                            read_data(
+                                self.strings.as_slice(),
+                                self.formats.as_slice(),
+                                &mut xml,
+                                &mut cells,
+                            )?;
+                            break;
+                        }
+                        _ => (),
+                    }
+                }
+                Ok(Event::Eof) => break,
+                Err(e) => return Err(XlsxError::Xml(e)),
+                _ => (),
+            }
+        }
+        Ok(Range::from_sparse(cells))
+    }
 }
 
 struct InnerTableMetadata {
@@ -712,52 +842,6 @@ impl InnerTableMetadata {
             totals_row_count: 0,
         }
     }
-}
-fn worksheet2(
-    strings: &[String],
-    formats: &[CellFormat],
-    mut xml: XlsReader<'_>,
-    read_data: &mut dyn FnMut(&[String], &[CellFormat], &mut XlsReader<'_>) -> Result<(), XlsxError>,
-) -> Result<(), XlsxError>
-{
-    let mut buf = Vec::new();
-    'xml: loop {
-        buf.clear();
-        match xml.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) => {
-                match e.local_name().as_ref() {
-                    b"dimension" => {
-                        for a in e.attributes() {
-                            if let Attribute {
-                                key: QName(b"ref"),
-                                value: rdim,
-                            } = a.map_err(XlsxError::XmlAttr)?
-                            {
-                                let len = get_dimension(&rdim)?;
-                                println!("Dimension: {:?}", len);
-                                // if len < 1_000_000 {
-                                // it is unlikely to have more than that
-                                // there may be of empty cells
-                                // cells.reserve(len as usize);
-                                // }
-                                continue 'xml;
-                            }
-                        }
-                        return Err(XlsxError::UnexpectedNode("dimension"));
-                    }
-                    b"sheetData" => {
-                        read_data(strings, formats, &mut xml)?;
-                        break;
-                    }
-                    _ => (),
-                }
-            }
-            Ok(Event::Eof) => break,
-            Err(e) => return Err(XlsxError::Xml(e)),
-            _ => (),
-        }
-    }
-    Ok(())
 }
 
 fn worksheet<T, F>(
@@ -868,28 +952,15 @@ impl<RS: Read + Seek> Reader<RS> for Xlsx<RS> {
         })
     }
 
-    fn worksheet2(&mut self, num: usize,
-                  value_handler: &mut dyn FnMut((u32, u32), DataType) -> (),
+    fn worksheet2(
+        &mut self,
+        num: usize,
         callbacks: &mut dyn SheetCallbacks,
-    ) -> Option<Result<(), Self::Error>>
-    {
-        let xml = match self.sheets.get(num) {
-            Some((_, path)) => xml_reader(&mut self.zip, path),
-            None => return None,
-        };
-        let is_1904 = self.is_1904;
-        let strings = &self.strings;
-        let formats = &self.formats;
-        xml.map(|xml| {
-            worksheet2(
-                strings,
-                formats,
-                xml?,
-                &mut |_, _, xml| {
-                    read_sheet_data3(xml, strings, formats, is_1904, value_handler, callbacks)
-                },
-            )
-        })
+    ) -> Option<Result<(), Self::Error>> {
+        match self.worksheet3(num, callbacks) {
+            Ok(()) => Some(Ok(())),
+            Err(e) => Some(Err(e.into())),
+        }
     }
 
     fn worksheet_formula(&mut self, name: &str) -> Option<Result<Range<String>, XlsxError>> {
@@ -989,10 +1060,7 @@ fn get_attribute<'a>(atts: Attributes<'a>, n: QName) -> Result<Option<&'a [u8]>,
     Ok(None)
 }
 
-fn read_sheet<T, F>(
-    xml: &mut XlsReader<'_>,
-    push_cell: &mut F,
-) -> Result<(), XlsxError>
+fn read_sheet<T, F>(xml: &mut XlsReader<'_>, push_cell: &mut F) -> Result<(), XlsxError>
 where
     T: CellType,
     F: FnMut(
@@ -1052,17 +1120,83 @@ where
         }
     }
 }
+fn default_push_cells(
+    xml: &mut XlsReader<'_>,
+    strings: &[String],
+    formats: &[CellFormat],
+    is_1904: bool,
+    e: &BytesStart<'_>,
+    pos: (u32, u32),
+    c_element: &BytesStart<'_>,
+    callbacks: &mut dyn SheetCallbacks,
+) -> Result<(), XlsxError> {
+    // println!("at {:?}", pos);
+    match e.local_name().as_ref() {
+        b"is" => {
+            // inlineStr
+            if let Some(s) = read_string(xml, e.name())? {
+                callbacks.cell(
+                    CellPos {
+                        row: pos.0,
+                        col: pos.1,
+                    },
+                    DataType::String(s),
+                )
+            } else {
+                callbacks.cell(
+                    CellPos {
+                        row: pos.0,
+                        col: pos.1,
+                    },
+                    DataType::Empty,
+                )
+            }
+        }
+        b"v" => {
+            // value
+            let mut v = String::new();
+            let mut v_buf = Vec::new();
+            loop {
+                v_buf.clear();
+                match xml.read_event_into(&mut v_buf)? {
+                    Event::Text(t) => v.push_str(&t.unescape()?),
+                    Event::End(end) if end.name() == e.name() => break,
+                    Event::Eof => return Err(XlsxError::XmlEof("v")),
+                    _ => (),
+                }
+            }
+            match read_value(v, strings, formats, c_element, is_1904)? {
+                DataType::Empty => callbacks.cell(
+                    CellPos {
+                        row: pos.0,
+                        col: pos.1,
+                    },
+                    DataType::Empty,
+                ),
+                v => callbacks.cell(
+                    CellPos {
+                        row: pos.0,
+                        col: pos.1,
+                    },
+                    v,
+                ),
+            }
+        }
+        b"f" => {
+            xml.read_to_end_into(e.name(), &mut Vec::new())?;
+        }
+        _n => return Err(XlsxError::UnexpectedNode("v, f, or is")),
+    }
+    Ok(())
+}
 
 fn read_sheet2(
     xml: &mut XlsReader<'_>,
-    push_cell: &mut dyn FnMut(
-        &mut XlsReader<'_>,
-        &BytesStart<'_>, // start_element
-        (u32, u32),      // pos
-        &BytesStart<'_>,// cell_element containing the above start_element
-    ) -> Result<(), XlsxError>,
-) -> Result<(), XlsxError>
-{
+    strings: &[String],
+    formats: &[CellFormat],
+    is_1904: bool,
+    callbacks: &mut dyn SheetCallbacks,
+) -> Result<(), XlsxError> {
     let mut buf = Vec::new();
     let mut cell_buf = Vec::new();
 
@@ -1097,8 +1231,9 @@ fn read_sheet2(
                 loop {
                     cell_buf.clear();
                     match xml.read_event_into(&mut cell_buf) {
-                        Ok(Event::Start(ref e)) => push_cell(//data_handler,
-                                                             xml, e, pos, c_element)?,
+                        Ok(Event::Start(ref e)) => default_push_cells(
+                            xml, strings, formats, is_1904, e, pos, c_element, callbacks,
+                        )?,
                         Ok(Event::End(ref e)) if e.local_name().as_ref() == b"c" => break,
                         Ok(Event::Eof) => return Err(XlsxError::XmlEof("c")),
                         Err(e) => return Err(XlsxError::Xml(e)),
@@ -1247,16 +1382,15 @@ fn read_value(
 //         // data_handler,
 //     )
 // }
-struct NopCallbacks {}
+struct NopCallbacks {
+    cells: Vec<Cell<DataType>>,
+}
 impl SheetCallbacks for NopCallbacks {
-    fn dimension(&mut self, dim: &Dimension) {
+    fn dimension(&mut self, _dim: Dimension) {}
+    fn cell(&mut self, pos: CellPos, data_type: DataType) {
+        self.cells.push(Cell::new((pos.row, pos.col), data_type));
     }
-
-    fn cell(&mut self, pos: &CellPos, data_type: &DataType) {
-    }
-
-    fn row_end(&mut self, pos: &CellPos) {
-    }
+    fn row_end(&mut self, _pos: CellPos) {}
 }
 fn read_sheet_data(
     xml: &mut XlsReader<'_>,
@@ -1265,35 +1399,48 @@ fn read_sheet_data(
     cells: &mut Vec<Cell<DataType>>,
     is_1904: bool,
 ) -> Result<(), XlsxError> {
-    let data_handler = &mut |pos: (u32, u32), data_type: DataType| {
-        cells.push(Cell::new(pos, data_type));
+    // let data_handler = &mut |pos: (u32, u32), data_type: DataType| {
+    //     cells.push(Cell::new(pos, data_type));
+    // };
+    //let mut tmp_cells: Vec<Cell<DataType>> = vec![];
+    let mut callbacks = NopCallbacks {
+        cells: vec![], //Box::new(tmp_cells),
     };
-    let mut callbacks = NopCallbacks {};
-    read_sheet_data3(xml, strings, formats, is_1904, data_handler, &mut callbacks)
+    let res = read_sheet_data3(xml, strings, formats, is_1904, &mut callbacks);
+    cells.extend_from_slice(callbacks.cells.leak());
+    res
 }
 fn read_sheet_data3(
     xml: &mut XlsReader<'_>,
     strings: &[String],
     formats: &[CellFormat],
     is_1904: bool,
-    data_handler: &mut dyn FnMut((u32, u32), DataType) -> (),
     callbacks: &mut (impl SheetCallbacks + ?Sized),
-) -> Result<(), XlsxError>
-     {
-    let default_push_cells = &mut|xml: &mut XlsReader<'_>,
-                              e: &BytesStart<'_>,
-                              pos: (u32, u32),
-                              c_element: &BytesStart<'_>| {
+) -> Result<(), XlsxError> {
+    let default_push_cells = &mut |xml: &mut XlsReader<'_>,
+                                   e: &BytesStart<'_>,
+                                   pos: (u32, u32),
+                                   c_element: &BytesStart<'_>| {
         // println!("at {:?}", pos);
         match e.local_name().as_ref() {
             b"is" => {
                 // inlineStr
                 if let Some(s) = read_string(xml, e.name())? {
-                    data_handler(pos, DataType::String(s.clone()));
-                    callbacks.cell(&CellPos{row:pos.0, col:pos.1}, &DataType::String(s))
+                    callbacks.cell(
+                        CellPos {
+                            row: pos.0,
+                            col: pos.1,
+                        },
+                        DataType::String(s),
+                    )
                 } else {
-                    data_handler(pos, DataType::Empty);
-                    callbacks.cell(&CellPos{row:pos.0, col:pos.1}, &DataType::Empty)
+                    callbacks.cell(
+                        CellPos {
+                            row: pos.0,
+                            col: pos.1,
+                        },
+                        DataType::Empty,
+                    )
                 }
             }
             b"v" => {
@@ -1310,14 +1457,20 @@ fn read_sheet_data3(
                     }
                 }
                 match read_value(v, strings, formats, c_element, is_1904)? {
-                    DataType::Empty => {
-                        data_handler(pos, DataType::Empty);
-                        callbacks.cell(&CellPos{row:pos.0, col:pos.1}, &DataType::Empty)
-                    }
-                    ,
-                    v => { data_handler(pos, v.clone());
-                        callbacks.cell(&CellPos{row:pos.0, col:pos.1}, &v)
-                    },
+                    DataType::Empty => callbacks.cell(
+                        CellPos {
+                            row: pos.0,
+                            col: pos.1,
+                        },
+                        DataType::Empty,
+                    ),
+                    v => callbacks.cell(
+                        CellPos {
+                            row: pos.0,
+                            col: pos.1,
+                        },
+                        v,
+                    ),
                 }
             }
             b"f" => {

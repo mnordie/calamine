@@ -17,7 +17,10 @@ use crate::formats::{
 use crate::utils::read_usize;
 use crate::utils::{push_column, read_f64, read_i16, read_i32, read_u16, read_u32};
 use crate::vba::VbaProject;
-use crate::{Cell, CellErrorType, DataType, Metadata, Range, Reader, Sheet, SheetCallbacks, SheetType, SheetVisible};
+use crate::{
+    Cell, CellErrorType, DataType, Metadata, Range, Reader, Sheet, SheetCallbacks, SheetType,
+    SheetVisible,
+};
 
 #[derive(Debug)]
 /// An enum to handle Xls specific errors
@@ -222,7 +225,12 @@ impl<RS: Read + Seek> Reader<RS> for Xls<RS> {
         self.sheets.get(name).map(|r| Ok(r.0.clone()))
     }
 
-    fn worksheet2(&mut self, num: usize, read_data: &mut dyn FnMut((u32, u32), DataType) -> (),callbacks: &mut dyn SheetCallbacks) -> std::option::Option<Result<(), XlsError>> {
+    fn worksheet2(
+        &mut self,
+        num: usize,
+        // read_data: &mut dyn FnMut((u32, u32), DataType) -> (),
+        callbacks: &mut dyn SheetCallbacks,
+    ) -> std::option::Option<Result<(), XlsError>> {
         todo!()
     }
 

@@ -171,7 +171,12 @@ where
         self.sheets.get(name).map(|r| Ok(r.0.to_owned()))
     }
 
-    fn worksheet2(&mut self, num: usize, read_data: &mut dyn FnMut((u32, u32), DataType) -> (),callbacks: &mut dyn SheetCallbacks) -> Option<Result<(), Self::Error>> {
+    fn worksheet2(
+        &mut self,
+        num: usize,
+        // read_data: &mut dyn FnMut((u32, u32), DataType) -> (),
+        callbacks: &mut dyn SheetCallbacks,
+    ) -> Option<Result<(), Self::Error>> {
         todo!()
     }
 
